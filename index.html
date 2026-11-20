@@ -78,6 +78,11 @@ input:focus,select:focus,button:focus-visible{outline:3px solid var(--pri);outli
 .seg button.at{background:var(--pri);color:var(--pri-ink)}
 .simr input{width:96px;min-height:44px;text-align:center;font-size:16px;font-weight:700;background:var(--field);border:1px solid var(--line);border-radius:10px;padding:4px}
 .siml{font-size:13px;font-weight:700;color:var(--pri)}
+.simr .volta{min-height:44px;padding:0 12px;border:1px solid var(--line);border-radius:10px;background:var(--field);color:var(--mut);font-weight:700;cursor:pointer}
+.hisp{font-size:13px;color:var(--mut);margin-top:2px}
+.hisp b{color:var(--ink)}
+.hisbox{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:4px 0 10px}
+.hisbox .hint{margin:0;flex:1 1 200px}
 .verba{font-size:13px;color:var(--mut);margin:-2px 0 8px;line-height:1.35}
 .verba b{color:var(--ink)}
 .verba.neg, .verba.neg b{color:var(--err)}
@@ -188,6 +193,10 @@ details summary{cursor:pointer;font-weight:600;font-size:14px;color:var(--mut)}
       <div><label for="prazo">Prazo de pagamento</label><input type="text" id="prazo" inputmode="numeric" placeholder="ex.: 45 ou 21/28/35" autocomplete="off" readonly></div>
     </div>
     <div class="aviso" id="avTab" hidden></div>
+    <div class="hisbox" id="hisBox" hidden>
+      <p class="hint" id="hHis" role="status"></p>
+      <button class="b sec" id="bAuto" type="button" hidden>PREENCHER PELO HISTÓRICO</button>
+    </div>
   </section>
 
   <section class="card" aria-labelledby="h-itens">
@@ -277,6 +286,7 @@ function agora(){ var d=new Date(); return {d: pad(d.getDate())+"/"+pad(d.getMon
 var qty = {};            // codigo -> volume (fardos)
 var sim = {};            // codigo -> {m:"p"|"r", v:numero}: desconto simulado pelo representante (p = %, r = preco R$/fardo)
 var modoCli = "";        // "cad" = cliente da base, "novo" = cliente nao cadastrado
+var HIS = null;          // historico do cliente vindo do servidor: {cli, p:{codigo -> {q, compras, preco, nf}}}
 var tabAtual = null;     // objeto da tabela selecionada
 var rows = {};           // codigo -> referencias de DOM
 var msgTimer = null;
@@ -300,12 +310,20 @@ function simFrac(cod, base){
   return Math.max(0, Math.min(1, f));
 }
 // g = % que GERA verba (fixo, da planilha); s = % SIMULADO (distribuicao da verba pelo representante).
+// Preco alterado pelo representante (pn): vira o Preco NF do produto.
+//   tab   = promocao, se houver; senao preco de tabela
+//   base  = preco alterado (se houver) ou tab.  Promocao: so pode ficar MENOR que a promocao.
+//   verba gerada = tab*g + (base - tab): acima da tabela gera verba extra; abaixo, consome verba.
+//   desconto simulado aplica sobre a base; Desconto Geral = soma dos descontos.
+//   O servidor (shared/varejoPedido.ts do Programa de Vendas) refaz esta mesma conta antes de aceitar o pedido.
+var pn = {};             // codigo -> preco alterado (R$/fardo)
+function precoBase(cod, preco, promo){ var tab = promo>0 ? promo : preco, v = pn[cod]; return (v>0) ? v : tab; }
 function calc(cod, preco, promo, q){
-  var p = D.produtos[cod]; var base = promo>0 ? promo : preco;
-  var g = p.v, s = simFrac(cod, base);
-  var Jg = base*(1-g), J = base*(1-s);
-  return {base:base, g:g, s:s, Jg:Jg, Kg:(p.pc ? Jg/p.pc : null), J:J, K:(p.pc ? J/p.pc : null),
-          sem:base*q, gera:base*g*q, desc:base*s*q, com:J*q};
+  var p = D.produtos[cod]; var tab = promo>0 ? promo : preco, base = precoBase(cod, preco, promo);
+  var g = p.v, s = simFrac(cod, base), ex = base - tab;
+  var Jg = tab*(1-g), J = base*(1-s);
+  return {base:base, tab:tab, alt:Math.abs(ex)>0.004, ex:ex, g:g, s:s, Jg:Jg, Kg:(p.pc ? Jg/p.pc : null), J:J, K:(p.pc ? J/p.pc : null),
+          sem:base*q, gera:(tab*g+ex)*q, desc:base*s*q, com:J*q};
 }
 function totais(){
   var t = {fd:0, sem:0, gera:0, desc:0, com:0, itens:[], saldo:0, estourou:false};   // valores validos mesmo sem tabela escolhida
@@ -356,6 +374,7 @@ function montaLista(){
     var info = el("div");
     info.appendChild(el("div","nome",p.d));
     info.appendChild(el("div","meta","Cód. "+cod+(p.pc ? " · "+p.pc+" pacotes por fardo" : "")));
+    var hi = el("div","hisp"); info.appendChild(hi);
     var pr = el("div","preco");
     if(it[2]>0){ var s = el("s",null,money(it[1])); pr.appendChild(s); pr.appendChild(document.createTextNode(" ")); pr.appendChild(el("b",null,money(it[2]))); pr.appendChild(el("span","tag","PROMOÇÃO")); }
     else pr.appendChild(el("b",null,money(it[1])));
@@ -368,6 +387,15 @@ function montaLista(){
     var avI = el("div","avitem"); info.appendChild(avI);
     var gv = el("div","siml"); info.appendChild(gv);
     var sub = el("div","sub"); info.appendChild(sub);
+    // campo "preco NF": o representante pode alterar o preco do fardo (promocao: so para menos)
+    var pr2 = el("div","simr");
+    pr2.appendChild(el("span","rot", it[2]>0 ? "Preço NF (até a promoção)" : "Preço NF"));
+    var pi = el("input"); pi.type="text"; pi.setAttribute("inputmode","decimal"); pi.setAttribute("aria-label","Preço por fardo de "+p.d);
+    pi.placeholder = (it[2]>0 ? it[2] : it[1]).toFixed(2).replace(".",",");
+    pr2.appendChild(pi);
+    var bPv = el("button","volta","Voltar"); bPv.type="button"; bPv.setAttribute("aria-label","Voltar ao preço de tabela de "+p.d); pr2.appendChild(bPv);
+    info.appendChild(pr2);
+    var pl = el("div","siml"); info.appendChild(pl);
     // campo "desconto desejado": o representante escolhe % ou R$ (preco por fardo)
     var sr = el("div","simr");
     sr.appendChild(el("span","rot","Desconto desejado"));
@@ -383,11 +411,31 @@ function montaLista(){
     var bp = el("button",null,"+"); bp.type="button"; bp.setAttribute("aria-label","Aumentar "+p.d);
     q.appendChild(bm); q.appendChild(inp); q.appendChild(bp);
     w.appendChild(info); w.appendChild(q); box.appendChild(w);
-    rows[cod] = {w:w, inp:inp, sub:sub, gv:gv, it:it, simL:simL, avI:avI, si:si, bP:bP, bR:bR, modo:(sim[cod] ? sim[cod].m : "p")};
+    rows[cod] = {w:w, inp:inp, sub:sub, gv:gv, it:it, simL:simL, avI:avI, si:si, bP:bP, bR:bR, pi:pi, pl:pl, hi:hi, modo:(sim[cod] ? sim[cod].m : "p")};
     function leNum(txt){ var v = parseFloat(String(txt).replace(/\./g,"").replace(",",".")); return isNaN(v) ? null : v; }
     function fmtNum(v, casas){ return v.toFixed(casas).replace(".",","); }
+    function aplicaPreco(){
+      var v = leNum(pi.value), tab = it[2]>0 ? it[2] : it[1];
+      if(v===null || pi.value.trim()==="" || v<=0){ delete pn[cod]; }
+      else {
+        if(it[2]>0 && v > it[2]){ v = it[2]; pi.value = fmtNum(v,2); msg("Produto em promoção: o preço só pode ser menor que a promoção.","err"); }
+        if(!(it[2]>0) && v > tab*2){ v = Math.round(tab*200)/100; pi.value = fmtNum(v,2); msg("Preço limitado ao dobro da tabela. Confira o valor digitado.","err"); }
+        if(Math.abs(v-tab) < 0.005) delete pn[cod]; else pn[cod] = v;
+      }
+      var s = sim[cod], b = precoBase(cod, it[1], it[2]);
+      if(s && s.m==="r" && s.v > b){ s.v = b; si.value = fmtNum(b,2); }   // desconto em R$ nunca acima do novo preco
+      atualizaLinha(cod); pintaTotais(); salvaRascunho();
+    }
+    pi.addEventListener("input", function(){
+      var d = pi.value.replace(/[^0-9.,]/g,"").replace(/\./g,","), i = d.indexOf(",");
+      if(i>=0) d = d.slice(0,i+1) + d.slice(i+1).replace(/,/g,"").slice(0,2);
+      d = d.slice(0,9); if(pi.value!==d) pi.value = d; aplicaPreco();
+    });
+    pi.addEventListener("focus", function(){ try{ pi.select(); }catch(e){} });
+    bPv.addEventListener("click", function(){ pi.value = ""; aplicaPreco(); });
+    if(pn[cod]) pi.value = fmtNum(pn[cod],2);
     function aplicaSim(){
-      var r = rows[cod], v = leNum(si.value), base = it[2]>0 ? it[2] : it[1];
+      var r = rows[cod], v = leNum(si.value), base = precoBase(cod, it[1], it[2]);
       if(v===null || si.value.trim()===""){ delete sim[cod]; }
       else {
         if(r.modo==="p") v = Math.max(0, Math.min(100, v)); else v = Math.max(0, Math.min(base, v));
@@ -397,7 +445,7 @@ function montaLista(){
     }
     function trocaModo(m){
       var r = rows[cod]; if(r.modo===m) return;
-      var base = it[2]>0 ? it[2] : it[1], s = sim[cod];
+      var base = precoBase(cod, it[1], it[2]), s = sim[cod];
       r.modo = m;
       if(s){                                   // converte o valor ja digitado para a outra unidade
         var f = simFrac(cod, base);
@@ -415,7 +463,7 @@ function montaLista(){
     });
     si.addEventListener("focus", function(){ try{ si.select(); }catch(e){} });
     if(sim[cod]) si.value = sim[cod].m==="r" ? fmtNum(sim[cod].v,2) : String(sim[cod].v).replace(".",",");
-    function set(v){ v = Math.max(0, Math.min(99999, parseInt(v,10)||0)); if(v>0) qty[cod]=v; else { delete qty[cod]; delete sim[cod]; si.value=""; } atualizaLinha(cod); pintaTotais(); salvaRascunho(); }
+    function set(v){ v = Math.max(0, Math.min(99999, parseInt(v,10)||0)); if(v>0) qty[cod]=v; else { delete qty[cod]; delete sim[cod]; si.value=""; delete pn[cod]; pi.value=""; } atualizaLinha(cod); pintaTotais(); salvaRascunho(); }
     bm.addEventListener("click", function(){ set((qty[cod]||0)-1); });
     bp.addEventListener("click", function(){ set((qty[cod]||0)+1); });
     inp.addEventListener("input", function(){ var d = inp.value.replace(/\D/g,"").slice(0,5); if(inp.value!==d) inp.value=d; set(d); });
@@ -435,7 +483,9 @@ function atualizaLinha(cod){
   r.bP.className = r.modo==="p" ? "at" : ""; r.bR.className = r.modo==="r" ? "at" : "";
   r.si.placeholder = r.modo==="p" ? "%" : "R$/fardo";
   r.simL.textContent = (q>0 && sim[cod]) ? "Simulação com verba de "+pct(c1.s)+": "+money(c1.J)+"/fardo"+(c1.K!==null ? " ("+money(c1.K)+" por pacote)" : "") : "";
-  r.gv.textContent = q>0 ? "Verba gerada: "+pct(c1.g)+" · "+money(calc(cod,r.it[1],r.it[2],q).gera) : "";
+  pintaHistLinha(cod);
+  r.pl.textContent = (q>0 && c1.alt) ? "Preço alterado: "+money(c1.base)+"/fardo (tabela "+money(c1.tab)+"). "+(c1.ex>0 ? "Gera "+money(c1.ex*q)+" a mais de verba." : "Consome "+money(-c1.ex*q)+" de verba.") : "";
+  r.gv.textContent = q>0 ? "Verba gerada: "+(c1.alt ? "" : pct(c1.g)+" · ")+money(calc(cod,r.it[1],r.it[2],q).gera) : "";
   r.sub.textContent = q>0 ? q+" × "+money(c1.J)+" = "+money(calc(cod,r.it[1],r.it[2],q).com) : "";
 }
 function aplicaFiltro(){
@@ -461,9 +511,10 @@ function trocaTabela(id, avisar){
     var ok = {}; nova.itens.forEach(function(it){ ok[it[0]] = 1; });
     Object.keys(qty).forEach(function(c){ if(!ok[c]){ delete qty[c]; perdidos++; } });
     Object.keys(sim).forEach(function(c){ if(!ok[c] || !qty[c]) delete sim[c]; });
+    Object.keys(pn).forEach(function(c){ if(!ok[c] || !qty[c]) delete pn[c]; });
   }
   tabAtual = nova;
-  montaLista(); pintaTotais(); salvaRascunho();
+  montaLista(); pintaHistorico(); pintaTotais(); salvaRascunho();
   if(perdidos && avisar) msg(perdidos+" item(ns) sem preço nesta tabela foram retirados do pedido.","err");
 }
 function preencheTabelas(){
@@ -506,6 +557,59 @@ function escolheCliente(c){
   $("tab").value = id; trocaTabela(id,true);
   $("hCli").textContent = "Cliente cadastrado: dados preenchidos pelo cadastro.";
   salvaRascunho();
+  carregaHistorico(c.c);
+}
+
+/* ---------- historico de compras do cliente e autopreenchimento ----------
+   Vem do servidor (mesma regra do Simulador do programa): as 3 ultimas notas de cada produto nos ultimos 6 meses;
+   o autopreenchimento usa a MAIOR delas. So preenche produtos que estao vazios e existem na tabela escolhida. */
+function dataBr(iso){ var m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso||""); return m ? m[3]+"/"+m[2]+"/"+m[1] : ""; }
+function pintaHistLinha(cod){
+  var r = rows[cod]; if(!r) return;
+  var h = HIS && HIS.p[cod];
+  r.hi.textContent = "";
+  if(!h) return;
+  var cs = h.compras.filter(function(x){ return x!==""; });
+  r.hi.appendChild(document.createTextNode("Últimas compras: "));
+  r.hi.appendChild(el("b",null, cs.join(" · ")+(cs.length ? " fd" : "")));
+  if(h.nf) r.hi.appendChild(document.createTextNode(" · última NF "+dataBr(h.nf)+(h.preco ? " a R$ "+h.preco : "")));
+}
+var hisTxt = "";
+function pintaHistorico(texto){
+  if(texto===undefined) texto = hisTxt; else hisTxt = texto;
+  var tem = HIS && Object.keys(HIS.p).length, naTab = 0;
+  if(tem && tabAtual) tabAtual.itens.forEach(function(it){ if(HIS.p[it[0]]) naTab++; });
+  $("hisBox").hidden = !texto && !tem;
+  $("hHis").textContent = texto || (tem ? "Histórico de compras de "+HIS.n+": "+naTab+" produto(s) desta tabela comprados nos últimos 6 meses." : "");
+  $("bAuto").hidden = !naTab;
+  Object.keys(rows).forEach(pintaHistLinha);
+}
+function carregaHistorico(cod){
+  HIS = null; pintaHistorico("");
+  if(!cod || !TOKEN) return;
+  pintaHistorico("Buscando o histórico de compras do cliente...");
+  api("/historico?cliente="+encodeURIComponent(cod), {headers:{Authorization:"Bearer "+TOKEN}}).then(function(r){
+    if(String($("cod").value)!==String(cod)) return;          // o cliente mudou enquanto buscava
+    if(r.status===401){ expirou(); return; }
+    if(r.status!==200){ pintaHistorico("Histórico indisponível para este cliente."); return; }
+    var p = {}; (r.j.produtos||[]).forEach(function(x){ p[x.cod] = x; });
+    HIS = {cli:cod, n:$("cli").value.trim(), p:p};
+    pintaHistorico(Object.keys(p).length ? "" : "Este cliente não tem compras nos últimos 6 meses.");
+  }, function(){
+    if(String($("cod").value)===String(cod)) pintaHistorico("Sem internet: o histórico de compras aparece quando a conexão voltar.");
+  });
+}
+function autoPreenche(){
+  if(!HIS || !tabAtual) return;
+  var feitos = 0, ja = 0;
+  tabAtual.itens.forEach(function(it){
+    var h = HIS.p[it[0]]; if(!h || !(h.q>0)) return;
+    if(qty[it[0]]){ ja++; return; }
+    qty[it[0]] = Math.min(99999, Math.round(h.q)); feitos++;
+    atualizaLinha(it[0]);
+  });
+  pintaTotais(); salvaRascunho();
+  msg(feitos ? feitos+" produto(s) preenchido(s) com a maior das 3 últimas compras."+(ja ? " "+ja+" já tinham volume e não mudaram." : "") : "Os produtos do histórico já estão com volume.","ok");
 }
 function clienteNovo(){
   modoCli = "novo";
@@ -514,6 +618,7 @@ function clienteNovo(){
   $("avTab").hidden = true;
   var id = tabelaPadrao(); $("tab").value = id; trocaTabela(id,false);
   $("hCli").textContent = "Cliente novo: preencha os dados abaixo.";
+  HIS = null; pintaHistorico("");
   salvaRascunho();
   $("cli").focus();
 }
@@ -543,7 +648,8 @@ function montaTexto(t, tipo){
     L.push("*"+i.cod+"* "+p.d);
     L.push("Quantidade: "+i.q+" fardos");
     if(apr){
-      L.push("Preço NF: "+money(i.c.base)+"/fd"+(i.promo>0 ? " (promoção; tabela "+money(i.preco)+")" : ""));
+      L.push("Preço NF: "+money(i.c.base)+"/fd"+(i.c.alt ? " (ALTERADO; "+(i.promo>0 ? "promoção " : "tabela ")+money(i.c.tab)+")" : (i.promo>0 ? " (promoção; tabela "+money(i.preco)+")" : "")));
+      if(i.c.alt) L.push("Alteração de preço: "+(i.c.ex>0 ? "gera +" : "consome ")+money(Math.abs(i.c.ex*i.q))+" de verba");
       L.push("Verba: gera "+pct(i.c.g)+" | simulado "+pct(i.c.s)+(i.c.s > i.c.g + 1e-9 ? " ▲" : (i.c.s < i.c.g - 1e-9 ? " ▼" : "")));
       L.push("Total NF: "+money(i.c.sem)+" | Desconto: "+money(i.c.desc));
       L.push("Preço final: "+money(i.c.J)+"/fd");
@@ -590,7 +696,7 @@ function gerarImagem(t, tipo, ini, fim, pag, npag){
   var ultima = pag===npag;
   var linhas = t.itens.slice(ini, fim).map(function(i){
     var p = D.produtos[i.cod], nome = quebra(med, p.d, cols[1].w-16, 3);
-    var extra = (apr && i.promo>0) ? "Promoção (tabela "+n2(i.preco)+")" : "";
+    var extra = !apr ? "" : (i.c.alt ? "Preço alterado ("+(i.promo>0 ? "promoção " : "tabela ")+n2(i.c.tab)+")" : (i.promo>0 ? "Promoção (tabela "+n2(i.preco)+")" : ""));
     var v = apr ? [String(i.cod), nome, String(i.q), n2(i.c.base), pct(i.c.g), pct(i.c.s), n2(i.c.desc), n2(i.c.sem)]
                 : [String(i.cod), nome, String(i.q), n2(i.c.base), n2(i.c.sem), n2(i.c.J)];
     return {i:i, v:v, extra:extra, h: 20 + 28*nome.length + (extra ? 24 : 0)};
@@ -748,7 +854,7 @@ function valida(){
 
 /* ---------- salvar / enviar ---------- */
 function historico(){ return lsJson(K.h, []); }
-function assinatura(){ return JSON.stringify([$("cod").value.trim(), $("cli").value.trim(), $("prazo").value.trim(), $("tab").value, qty, sim]); }
+function assinatura(){ return JSON.stringify([$("cod").value.trim(), $("cli").value.trim(), $("prazo").value.trim(), $("tab").value, qty, sim, pn]); }
 function guardaHist(t){
   // um registro por pedido: enviar para o cliente e depois para aprovacao nao duplica
   var h = historico(), a = agora(), s = assinatura();
@@ -818,7 +924,7 @@ function pintaHist(){
 /* ---------- rascunho (nao perde o pedido ao fechar o app) ---------- */
 function salvaRascunho(){
   lsSet(K.d, JSON.stringify({ver:CFG.versao, rep:$("rep").value, modo:modoCli, cod:$("cod").value, cli:$("cli").value, grupo:$("grupo").value,
-    prazo:$("prazo").value, tab:$("tab").value, qty:qty, sim:sim}));
+    prazo:$("prazo").value, tab:$("tab").value, qty:qty, sim:sim, pn:pn}));
 }
 function carregaRascunho(d){
   if(!d) return;
@@ -830,11 +936,12 @@ function carregaRascunho(d){
   if(modoCli==="cad") $("hCli").textContent = "Cliente cadastrado: dados preenchidos pelo cadastro.";
   if(modoCli==="novo") $("hCli").textContent = "Cliente novo: preencha os dados abaixo.";
   $("tab").value = d.tab || tabelaPadrao();
-  qty = d.qty||{}; sim = d.sim||{};
+  qty = d.qty||{}; sim = d.sim||{}; pn = d.pn||{};
   trocaTabela($("tab").value,false);
+  if(modoCli==="cad" && d.cod) carregaHistorico(Number(d.cod));
 }
 function novoPedido(){
-  novoRid(); qty = {}; sim = {}; modoCli = ""; ["cod","cli","grupo","prazo","busca","filtro"].forEach(function(i){ $(i).value=""; });
+  novoRid(); qty = {}; sim = {}; pn = {}; HIS = null; hisTxt = ""; modoCli = ""; ["cod","cli","grupo","prazo","busca","filtro"].forEach(function(i){ $(i).value=""; });
   travaCampos(true); $("hCli").textContent = 'Escolha o cliente na lista. Se ele não for cadastrado, escreva apenas a palavra "Novo".';
   $("tab").value = tabelaPadrao(); $("avTab").hidden = true; trocaTabela($("tab").value,false); salvaRascunho();
   pintaRecuperar(); window.scrollTo(0,0); msg("Novo pedido iniciado.","ok");
@@ -993,6 +1100,7 @@ function entra(pacote, user, manter){
   init();
   $("ver").textContent = "Versão "+CFG.versao+" · catálogo "+VERSAO_CAT;
   $("bSis").addEventListener("click", enviarAoSistema);
+  $("bAuto").addEventListener("click", autoPreenche);
   window.addEventListener("online", enviarFila);
   document.addEventListener("visibilitychange", function(){ if(!document.hidden) enviarFila(); });
   setInterval(enviarFila, 60000);
@@ -1062,7 +1170,7 @@ function corpoPedido(t){
   return {
     chave: hex(aleatorio(16)), repCod: String(D.rep.cod), tabelaId: tabAtual.id,
     cliente: modoCli==="novo" ? {novo:true, nome:$("cli").value.trim()} : {cod:Number($("cod").value)},
-    itens: t.itens.map(function(i){ var o = {cod:Number(i.cod), q:i.q}; if(sim[i.cod]) o.sim = {m:sim[i.cod].m, v:sim[i.cod].v}; return o; }),
+    itens: t.itens.map(function(i){ var o = {cod:Number(i.cod), q:i.q}; if(sim[i.cod]) o.sim = {m:sim[i.cod].m, v:sim[i.cod].v}; if(pn[i.cod]) o.pn = pn[i.cod]; return o; }),
     totalInformado: Math.round(t.com*100)/100
   };
 }
