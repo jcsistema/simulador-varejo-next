@@ -887,15 +887,10 @@ function numeroZap(){
   return n;
 }
 function numeroAprovacao(){
-  // O WhatsApp de aprovacao nao fica no codigo (repositorio publico). Ordem: pacote cifrado (D.cfg.aprovacao), CFG, ajuste guardado neste aparelho, pergunta uma vez.
-  var n = ((typeof D!=="undefined" && D && D.cfg && D.cfg.aprovacao) || CFG.aprovacao || lsGet("sim_apr_v1") || "");
-  n = String(n).replace(/\D/g,"");
-  if(!n){
-    var t = window.prompt("Informe o WhatsApp de aprova\u00e7\u00e3o do gerente, com DDD. Fica guardado s\u00f3 neste aparelho.", "");
-    n = (t||"").replace(/\D/g,"");
-    if(n.length<10 || n.length>13) return "";
-    lsSet("sim_apr_v1", n);
-  }
+  // O WhatsApp de aprovacao nao fica no codigo (repositorio publico) nem e digitado no aparelho:
+  // vem do servidor junto com o catalogo (Painel Administrativo do Programa de Vendas) e fica guardado no cofre cifrado.
+  var n = String((D && D.cfg && D.cfg.aprovacao) || "").replace(/\D/g,"");
+  if(!n){ msg("O WhatsApp de aprova\u00e7\u00e3o ainda n\u00e3o foi definido. Avise o gerente de vendas.","err"); return ""; }
   if(n.length<=11) n = "55"+n;
   return n;
 }
@@ -1106,7 +1101,7 @@ function atualizaCatalogo(pacote){
 
 /* entrada */
 function entra(pacote, user, manter){
-  D = pacote.catalogo; TOKEN = pacote.token; VERSAO_CAT = pacote.versao; USER = user;
+  D = pacote.catalogo; D.cfg = pacote.config || {}; TOKEN = pacote.token; VERSAO_CAT = pacote.versao; USER = user;
   var c = "_"+String(D.rep.cod).replace(/\W/g,"");
   K = {h:"nxv_hist"+c, d:"nxv_draft"+c, z:"nxv_zap"+c, r:"nxv_rid"+c, a:"nxv_auto"+c};
   RID = lsGet(K.r) || novoRid();
@@ -1137,7 +1132,7 @@ function tentaLogin(user, digitada, pwd, manter){
     if(r.status!==200) throw recusa(r.j.erro || "Login ou senha incorretos.");
     return api("/catalogo", {headers:{Authorization:"Bearer "+r.j.token}}).then(function(c){
       if(c.status!==200) throw recusa(c.j.erro || "Catálogo indisponível. Tente de novo.");
-      var pacote = {versao:c.j.versao, catalogo:c.j.catalogo, token:r.j.token};
+      var pacote = {versao:c.j.versao, catalogo:c.j.catalogo, token:r.j.token, config:c.j.config||{}};
       return gravaCofre(user, pwd, manter, pacote).then(function(){ return entra(pacote, user, manter); });
     });
   }, function(){ return loginSemInternet(user, pwd, manter); }).then(function(){ return true; }).catch(function(e){
@@ -1162,8 +1157,14 @@ function sincroniza(){
   if(!TOKEN) return;
   api("/catalogo", {headers:{Authorization:"Bearer "+TOKEN}}).then(function(r){
     if(r.status===401){ expirou(); return; }
-    if(r.status!==200 || r.j.versao===VERSAO_CAT) return;
-    atualizaCatalogo({versao:r.j.versao, catalogo:r.j.catalogo, token:TOKEN}).then(function(){
+    if(r.status!==200) return;
+    var cfg = r.j.config || {};
+    if(r.j.versao===VERSAO_CAT){
+      // mesmo catalogo: so o WhatsApp de aprovacao pode ter mudado; atualiza sem recarregar
+      if((cfg.aprovacao||"") !== ((D.cfg||{}).aprovacao||"")){ D.cfg = cfg; atualizaCatalogo({versao:VERSAO_CAT, catalogo:r.j.catalogo, token:TOKEN, config:cfg}); }
+      return;
+    }
+    atualizaCatalogo({versao:r.j.versao, catalogo:r.j.catalogo, token:TOKEN, config:cfg}).then(function(){
       if(!Object.keys(qty).length){ window.location.reload(); return; }
       msg("Há preços novos. Eles entram quando você iniciar um novo pedido.","ok");
     });
