@@ -259,7 +259,7 @@ details summary{cursor:pointer;font-weight:600;font-size:14px;color:var(--mut)}
 "use strict";
 var API = "https://app.jccr.com.br/api/varejo";
 var D = null, K = {};
-var CFG = {versao:"10 teste", gerado:"18/11/2026", whatsapp:"", aprovacao:"5581992926148", modo:"site"};   // modo: arquivo | site | pagina
+var CFG = {versao:"10 teste", gerado:"18/11/2026", whatsapp:"", aprovacao:"", modo:"site"};   // modo: arquivo | site | pagina
 
 /* ---------- armazenamento local (com fallback em memoria) ---------- */
 var mem = {};
@@ -819,7 +819,9 @@ function enviaPedido(ev, tipo){
   var botao = ev.currentTarget;
   var t = valida(); if(!t){ ev.preventDefault(); return; }
   guardaHist(t);
-  var dest = "https://wa.me/"+(tipo==="apr" ? CFG.aprovacao : numeroZap())+"?text=";
+  var num = (tipo==="apr" ? numeroAprovacao() : numeroZap());
+  if(tipo==="apr" && !num){ ev.preventDefault(); return; }
+  var dest = "https://wa.me/"+num+"?text=";
   var url = dest+encodeURIComponent(montaTexto(t, tipo));
   if(url.length > 6000) url = dest+encodeURIComponent(legenda(t, tipo)+"\n(detalhes na imagem anexada)");   // pedido muito grande: texto curto, a imagem leva tudo
   var arqs = [];
@@ -884,6 +886,19 @@ function numeroZap(){
   if(n && n.length<=11) n = "55"+n;
   return n;
 }
+function numeroAprovacao(){
+  // O WhatsApp de aprovacao nao fica no codigo (repositorio publico). Ordem: pacote cifrado (D.cfg.aprovacao), CFG, ajuste guardado neste aparelho, pergunta uma vez.
+  var n = ((typeof D!=="undefined" && D && D.cfg && D.cfg.aprovacao) || CFG.aprovacao || lsGet("sim_apr_v1") || "");
+  n = String(n).replace(/\D/g,"");
+  if(!n){
+    var t = window.prompt("Informe o WhatsApp de aprova\u00e7\u00e3o do gerente, com DDD. Fica guardado s\u00f3 neste aparelho.", "");
+    n = (t||"").replace(/\D/g,"");
+    if(n.length<10 || n.length>13) return "";
+    lsSet("sim_apr_v1", n);
+  }
+  if(n.length<=11) n = "55"+n;
+  return n;
+}
 function enviar(ev){ enviaPedido(ev, "cli"); }
 function enviarAprovacao(ev){ enviaPedido(ev, "apr"); }
 function salvar(){
@@ -910,7 +925,7 @@ function pintaHist(){
     var bs = el("div"); bs.style.display="flex"; bs.style.gap="6px"; bs.style.flexWrap="wrap"; bs.style.justifyContent="flex-end";
     var b1 = el("a","b sec","Cliente"); b1.href="#"; b1.target="_blank"; b1.rel="noopener"; b1.setAttribute("role","button"); b1.style.padding="0 10px";
     var b4 = el("a","b sec","Aprovação"); b4.href="#"; b4.target="_blank"; b4.rel="noopener"; b4.setAttribute("role","button"); b4.style.padding="0 10px";
-    b4.addEventListener("click", function(){ b4.href = "https://wa.me/"+CFG.aprovacao+"?text="+encodeURIComponent(p.textoA||p.texto); });
+    b4.addEventListener("click", function(ev){ var n = numeroAprovacao(); if(!n){ ev.preventDefault(); return; } b4.href = "https://wa.me/"+n+"?text="+encodeURIComponent(p.textoA||p.texto); });
     var b2 = el("button","b sec","Baixar"); b2.type="button";
     var b3 = el("button","b sec","Apagar"); b3.type="button";
     b1.addEventListener("click", function(){ b1.href = "https://wa.me/"+numeroZap()+"?text="+encodeURIComponent(p.texto); });

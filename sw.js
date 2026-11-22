@@ -1,5 +1,5 @@
 // Service worker da copia de teste. O prefixo "nxv-" nao pode comecar com "simulador-": o oficial apaga os caches com esse prefixo.
-var CACHE = "nxv-10-teste-2";
+var CACHE = "nxv-10-teste-3";
 var ARQUIVOS = ["./", "./index.html", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png"];
 self.addEventListener("install", function(e){
   e.waitUntil(caches.open(CACHE).then(function(c){
